@@ -1,0 +1,64 @@
+name: Public ECR publisher
+description: Publishes Docker image to a public AWS ECR repository
+inputs:
+  ecr-alias:
+    description: The default or custom alias of the public ECR.
+    required: true
+  aws-access-key-id:
+    description: AWS key having push access to the ECR
+    required: true
+  aws-secret-access-key: 
+    description: AWS secret key having push access to the ECR
+    required: true
+  latest-tag-branches:
+    description: Comma separated list of branch names for which to push 'latest' tag
+    required: false
+runs:
+  using: "composite"
+  steps: 
+  - name: Extract branch name
+    shell: bash
+    run: echo "##[set-output name=branch;]$(echo ${GITHUB_REF#refs/heads/})"
+    id: extract_branch
+  - name: Extract repo name
+    shell: bash
+    run: echo "##[set-output name=repo_name;]$(echo ${GITHUB_REPOSITORY} | sed "s/.*\///g" | sed "s/-docker$//")"
+    id: extract_repo_name
+  - name: Set short SHA
+    shell: bash
+    id: get_sha
+    run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+  - name: Generate tag
+    shell: bash
+    run: echo "##[set-output name=docker_tag;]${{ steps.extract_branch.outputs.branch }}-${GITHUB_RUN_NUMBER}_${{ steps.get_sha.outputs.sha_short }}"
+    id: generate_tag
+  - name: Build image
+    shell: bash
+    run: docker build . -t ${{ steps.extract_repo_name.outputs.repo_name }}
+  - name: Login to ECR public
+    shell: bash
+    run: docker run -e AWS_ACCESS_KEY_ID=${{ inputs.aws-access-key-id }} -e AWS_SECRET_ACCESS_KEY=${{ inputs.aws-secret-access-key }} -e us-east-1 amazon/aws-cli ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws/${{ inputs.ecr-alias }}
+  - name: Push generated tag to ECR
+    shell: bash
+    id: ecr
+    run: |
+      docker tag ${{ steps.extract_repo_name.outputs.repo_name }} public.ecr.aws/${{ inputs.ecr-alias }}/${{ steps.extract_repo_name.outputs.repo_name }}:${{ steps.generate_tag.outputs.docker_tag }}
+      docker push public.ecr.aws/${{ inputs.ecr-alias }}/${{ steps.extract_repo_name.outputs.repo_name }}:${{ steps.generate_tag.outputs.docker_tag }}
+  - name: Push branch tag to ECR
+    shell: bash
+    id: ecr-branch
+    run: |
+      docker tag ${{ steps.extract_repo_name.outputs.repo_name }} public.ecr.aws/${{ inputs.ecr-alias }}/${{ steps.extract_repo_name.outputs.repo_name }}:${{ steps.extract_branch.outputs.branch }}
+      docker push public.ecr.aws/${{ inputs.ecr-alias }}/${{ steps.extract_repo_name.outputs.repo_name }}:${{ steps.extract_branch.outputs.branch }}
+  - name: Push latest tag to ECR
+    shell: bash
+    id: ecr-latest
+    run: |
+      if echo ",${{ inputs.latest-tag-branches }}," | grep -q ",${{ steps.extract_branch.outputs.branch }},"
+      then
+        echo "Pushing latest tag"
+        docker tag ${{ steps.extract_repo_name.outputs.repo_name }} public.ecr.aws/${{ inputs.ecr-alias }}/${{ steps.extract_repo_name.outputs.repo_name }}:latest
+        docker push public.ecr.aws/${{ inputs.ecr-alias }}/${{ steps.extract_repo_name.outputs.repo_name }}:latest
+      else
+        echo "'latest-tag-branches' not set. Won't push 'latest' tag"
+      fi
